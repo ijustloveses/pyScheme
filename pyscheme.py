@@ -66,6 +66,7 @@ class SScope(object):
     def __init__(self, parent, vt):
         self.parent = parent
         self.variable_table = vt
+        self.buildin_funcs = {}
 
     # 从当前作用域开始查找，没找到则到父作用域查找
     # 显然，当前域优先
@@ -80,6 +81,11 @@ class SScope(object):
     def define(self, name, value):
         self.variable_table[name] = value
         return value
+
+    def buildin(self, name, func):
+        self.buildin_funcs[name] = func
+        # 为了链式操作
+        return self
 
 
 """ 以下为类型系统 """
@@ -120,10 +126,37 @@ class SList(list, SObject):
 
 
 class SFunc(SObject):
+    """
+        SFunc == SExpression + parameters + SScope
+    """
     def __init__(self, body, parameters, scope):
         self.body = body
         self.parameters = parameters
         self.scope = scope
+
+    def filled_parameters(self):
+        return filter(lambda p: self.scope.find_in_top(p), self.parameters)
+
+    # 给了部分参数，但是没给全部参数，这样就叫做 partial
+    def is_partial(self):
+        given_cnt = len(self.filled_parameters())
+        return given_cnt >= 1 and given_cnt < len(self.parameters)
+
+    def evaluate(self):
+        given_cnt = len(self.filled_parameters())
+        # 如果没给参数或 partial，那么仍然是个 SFunc
+        if given_cnt < len(self.parameters):
+            return self
+        # 参数给全了，就可以估值了
+        else:
+            return self.body.evaluate(self.scope)
+
+    def tostr(self):
+        pstr = ' '.join([p + ':' + self.scope.find_in_top(p) if self.scope.find_in_top(p) else p for p in self.parameters])
+        return 'func (%s) %s' % (pstr, self.body.tostr())
+
+
+
 
 
 
