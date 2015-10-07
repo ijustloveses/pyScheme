@@ -1,4 +1,5 @@
 # encoding: utf-8
+import operator
 
 
 def tokenize(text):
@@ -56,13 +57,28 @@ class SExpression(object):
                 cur = cur.parent
             # 其他的，创建 cur 的子节点，但是当前节点保持不变，仍在当前括号一层
             else:
+                # 最后，每个字符都会成为 SExpression
                 cur.children.append(SExpression(lex, [], cur))
         # 返回 root 的第一个子节点，也就是第一层的括号
         return root.children[0]
 
+    def evaluate(self, scope):
+        if len(self.children) == 0:
+            # 处理整数
+            if self.value.isdigit():
+                return int(self.value)
+            # 处理无子节点的变量，从 scope 中查找
+            else:
+                return scope.find(self.value)
+        else:
+            first = self.children[0]
+            if top_scope.buildin_funcs.has_key(first.value):
+                return top_scope.buildin_funcs[first.value](self.children[1:], scope)
+        raise Exception("This is not invalid syntax.")
+
 
 class SScope(object):
-    # 每个作用域就是含有一个父作用域的一套标志字典
+    # 每个作用域就是含有一个父作用域的一套标志字典和一套函数字典
     def __init__(self, parent, vt):
         self.parent = parent
         self.variable_table = vt
@@ -77,6 +93,12 @@ class SScope(object):
                 return cur.variable_table[name]
             cur = self.parent
         raise Exception("Name: %s is not defined" % name)
+
+    def find_in_top(self, name):
+        if name in self.variable_table:
+            return self.variable_table[name]
+        else:
+            return None
 
     def define(self, name, value):
         self.variable_table[name] = value
@@ -113,6 +135,7 @@ class SInt(int, SObject):
 class SBool(bool, SObject):
     def __new__(cls, value):
         assert isinstance(value, bool)
+        # 这里会出错
         i = bool.__new__(cls, value)
         return i
 """
@@ -156,12 +179,35 @@ class SFunc(SObject):
         return 'func (%s) %s' % (pstr, self.body.tostr())
 
 
+def evaluated_args(args, scope):
+    return [arg.evaluate(scope) for arg in args]
+
+def subtract_list(l):
+    assert len(l) > 0
+    return (l[0] - sum(l[1:])) if len(l) > 1 else (0 - l[0])
+
+def divide_list(l):
+    assert len(l) > 1
+    return l[0] / reduce(lambda x, y: x * y, l[1:])
+
+def rest_list(l):
+    assert len(l) == 2
+    return l[0] % l[1]
 
 
-
+# 顶级域，父为None
+top_scope = SScope(None, {})
+# 顶级域加入 buildin 函数
+# TODO: cast to int ??
+top_scope.buildin('+', lambda args, scope: sum(evaluated_args(args, scope))).buildin(
+                  '-', lambda args, scope: subtract_list(evaluated_args(args, scope))).buildin(
+                  '*', lambda args, scope: reduce(lambda x, y: x * y, evaluated_args(args, scope))).buildin(
+                  '/', lambda args, scope: divide_list(evaluated_args(args, scope))).buildin(
+                  '%', lambda args, scope: rest_list(evaluated_args(args, scope)))
 
 
 if __name__ == '__main__':
+    """
     print prettify(tokenize("a"))
     print prettify(tokenize("(def a 3)"))
     print prettify(tokenize("(begin (def a 3) (* a a))"))
@@ -178,3 +224,9 @@ if __name__ == '__main__':
     l = SList([1, 2, 3])
     l.append(4)
     print l.tostr()
+    """
+
+    exp = SExpression.parse('(* 2 (- (+ 3 4) 5)')
+    print exp.tostr()
+    res = exp.evaluate(top_scope)
+    print res
