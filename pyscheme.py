@@ -1,5 +1,4 @@
 # encoding: utf-8
-import operator
 
 
 def tokenize(text):
@@ -63,23 +62,48 @@ class SExpression(object):
         return root.children[0]
 
     def evaluate(self, scope):
+        # 如果无子节点，那么要么是数字，要么是变量
+        # 其实还可以是操作符，但是操作符在下面有子节点的部分优先处理
         if len(self.children) == 0:
-            # 处理整数
+            # No.1 处理整数
             if self.value.isdigit():
                 return int(self.value)
-            # 处理无子节点的变量，从 scope 中查找
+            # No.2 处理无子节点的变量，从 scope 中查找
             else:
                 return scope.find(self.value)
         else:
             first = self.children[0]
-            if top_scope.buildin_funcs.has_key(first.value):
+            # No.3 处理 if, like (if (< a 3) 3 a)
+            if first.value == 'if':
+                return self.children[2].evaluate(scope) if self.children[1].evaluate(scope) else self.children[3].evaluate(scope)
+            # No.4 处理 def， like (def pi 3.14)
+            elif first.value == 'def':
+                return scope.define(self.children[1].value, self.children[2].evaluate(scope))
+            # No.5 处理 begin, like (begin (def a 3) (* a a))
+            elif first.value == 'begin':
+                for statement in self.children[1:]:
+                    result = statement.evaluate(scope)
+                return result
+            # No.6 处理函数 func, like (func (x) (* x x))，生成一个 SFunc 对象，不做 evaluate
+            # 更重要的是，func 中会构建子 scope
+            elif first.value == 'func':
+                # body, parameter string, sub scope
+                return SFunc(self.children[2], [exp.value for exp in self.children[1].children], SScope(scope))
+            # No.7 处理内置操作符
+            elif first.value in top_scope.buildin_funcs:
                 return top_scope.buildin_funcs[first.value](self.children[1:], scope)
+            # No.8 处理自定义函数的调用， like ((func (x) (* x x)) 3)，暂时只实现单参数函数
+            elif first.value == '(':
+                func = first.evaluate(scope)
+                argment = self.children[1].evaluate(scope)
+                return func.update([argment]).evaluate()
+        # 都不是，那么异常
         raise Exception("This is not invalid syntax.")
 
 
 class SScope(object):
     # 每个作用域就是含有一个父作用域的一套标志字典和一套函数字典
-    def __init__(self, parent, vt):
+    def __init__(self, parent, vt={}):
         self.parent = parent
         self.variable_table = vt
         self.buildin_funcs = {}
@@ -157,6 +181,7 @@ class SFunc(SObject):
         self.parameters = parameters
         self.scope = scope
 
+    # 函数中，只能操作函数作用域中定义的参数，能访问全局变量，但全局变量不能做参数
     def filled_parameters(self):
         return filter(lambda p: self.scope.find_in_top(p), self.parameters)
 
@@ -165,6 +190,19 @@ class SFunc(SObject):
         given_cnt = len(self.filled_parameters())
         return given_cnt >= 1 and given_cnt < len(self.parameters)
 
+    # 函数生成时，还未有参数被赋值
+    # 一旦有参数被赋值，那么更新作用域中的变量表，实际实现上是重新创建了一个作用域
+    def update(self, argments):
+        i = 0
+        for p in self.parameters:
+            # 前面的参数已经被赋值过
+            if self.scope.find_in_top(p):
+                continue
+            # 后面的参数都是未赋值的
+            self.scope.define(p, argments[i])
+            i += 1
+        return self
+
     def evaluate(self):
         given_cnt = len(self.filled_parameters())
         # 如果没给参数或 partial，那么仍然是个 SFunc
@@ -172,6 +210,7 @@ class SFunc(SObject):
             return self
         # 参数给全了，就可以估值了
         else:
+            # 这里 evaluate 时可以访问全局变量
             return self.body.evaluate(self.scope)
 
     def tostr(self):
@@ -194,16 +233,34 @@ def rest_list(l):
     assert len(l) == 2
     return l[0] % l[1]
 
+def compare_list(l, oper):
+    assert len(l) == 2
+    opers = {
+        '=': lambda s1, s2: s1 == s2,
+        '<': lambda s1, s2: s1 < s2,
+        '>': lambda s1, s2: s1 > s2,
+        '<=': lambda s1, s2: s1 <= s2,
+        '>=': lambda s1, s2: s1 >= s2,
+    }
+    return opers[oper](l[0], l[1])
+
 
 # 顶级域，父为None
-top_scope = SScope(None, {})
+top_scope = SScope(None)
 # 顶级域加入 buildin 函数
-# TODO: cast to int ??
 top_scope.buildin('+', lambda args, scope: sum(evaluated_args(args, scope))).buildin(
                   '-', lambda args, scope: subtract_list(evaluated_args(args, scope))).buildin(
                   '*', lambda args, scope: reduce(lambda x, y: x * y, evaluated_args(args, scope))).buildin(
                   '/', lambda args, scope: divide_list(evaluated_args(args, scope))).buildin(
-                  '%', lambda args, scope: rest_list(evaluated_args(args, scope)))
+                  '%', lambda args, scope: rest_list(evaluated_args(args, scope))).buildin(
+                  '=', lambda args, scope: compare_list(evaluated_args(args, scope), '=')).buildin(
+                  '<', lambda args, scope: compare_list(evaluated_args(args, scope), '<')).buildin(
+                  '>', lambda args, scope: compare_list(evaluated_args(args, scope), '>')).buildin(
+                  '<=', lambda args, scope: compare_list(evaluated_args(args, scope), '<=')).buildin(
+                  '>=', lambda args, scope: compare_list(evaluated_args(args, scope), '>=')).buildin(
+                  'and', lambda args, scope: all(evaluated_args(args, scope))).buildin(
+                  'or', lambda args, scope: any(evaluated_args(args, scope))).buildin(
+                  'not', lambda args, scope: len(evaluated_args(args, scope)) == 1 and not evaluated_args(args, scope))
 
 
 if __name__ == '__main__':
@@ -225,8 +282,10 @@ if __name__ == '__main__':
     l.append(4)
     print l.tostr()
     """
-
-    exp = SExpression.parse('(* 2 (- (+ 3 4) 5)')
-    print exp.tostr()
-    res = exp.evaluate(top_scope)
-    print res
+    for expression in ['(* 2 (- (+ 3 4) 5)', '(if (< 3 5) 5 3)', '(if (not (< 3 5)) 5 3)', '(if (and (< 3 5) (> 1 2)) 5 3)',
+                       '(if (or (< 3 5) (> 1 2)) 5 3)', '(begin (def a 3) (* a a))', '((func (x) (* x x)) 3)']:
+        exp = SExpression.parse(expression)
+        print exp.tostr()
+        res = exp.evaluate(top_scope)
+        print res
+        print ''
